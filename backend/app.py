@@ -1,0 +1,876 @@
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from flask_sqlalchemy import SQLAlchemy
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime, timedelta
+import os
+from dotenv import load_dotenv
+from openai import OpenAI
+import openai
+import json
+from pathlib import Path
+
+# Load .env from project root (parent directory of backend/)
+# Handle both cases: when run as module and when run directly
+try:
+    # When app.py is imported or run directly
+    project_root = Path(__file__).parent.parent
+except NameError:
+    # Fallback if __file__ is not available
+    project_root = Path.cwd().parent if Path.cwd().name == 'backend' else Path.cwd()
+
+env_path = project_root / '.env'
+print(f"Loading .env from: {env_path.absolute()}")
+load_dotenv(dotenv_path=env_path, override=True)
+
+# Verify API key is loaded
+api_key_check = os.getenv('OPENAI_API_KEY')
+if api_key_check and api_key_check != 'your-openai-api-key-here':
+    print(f"✅ OpenAI API key loaded successfully")
+else:
+    print(f"⚠️  WARNING: OpenAI API key not found or using placeholder")
+
+app = Flask(__name__)
+# Use environment variable for database URI, or default to SQLite
+# For Cloud Run, use /tmp directory which is writable (data is ephemeral)
+# For production, use Cloud SQL instead
+default_db_uri = 'sqlite:////tmp/lunareading.db' if os.environ.get('PORT') else 'sqlite:///lunareading.db'
+db_uri = os.getenv('SQLALCHEMY_DATABASE_URI', default_db_uri)
+app.config['SQLALCHEMY_DATABASE_URI'] = db_uri
+print(f"Database URI: {db_uri}")
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'your-secret-key-change-in-production')
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=7)
+
+CORS(app)
+db = SQLAlchemy(app)
+jwt = JWTManager(app)
+
+# Initialize database on module import (for gunicorn --preload)
+def init_database():
+    """Initialize database tables - called when module is imported"""
+    try:
+        print("Initializing database...")
+        db_uri = app.config['SQLALCHEMY_DATABASE_URI']
+        print(f"Database URI: {db_uri}")
+        
+        # Ensure database directory exists (for SQLite)
+        if db_uri.startswith('sqlite:///'):
+            db_path = db_uri.replace('sqlite:///', '')
+            if db_path != ':memory:':
+                db_dir = os.path.dirname(db_path) if os.path.dirname(db_path) else '/tmp'
+                if db_dir and not os.path.exists(db_dir):
+                    os.makedirs(db_dir, exist_ok=True)
+                    print(f"Created database directory: {db_dir}")
+        
+        # Create all tables
+        with app.app_context():
+            db.create_all()
+            print("✅ Database tables created successfully")
+    except Exception as e:
+        print(f"⚠️  Database initialization error: {e}")
+        import traceback
+        traceback.print_exc()
+
+# Initialize database when module is imported (for gunicorn --preload)
+init_database()
+
+# Initialize OpenAI client - will be recreated if API key changes
+def get_openai_client():
+    """Get OpenAI client with current API key"""
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key:
+        print("WARNING: OPENAI_API_KEY not found in environment")
+    return OpenAI(api_key=api_key)
+
+openai_client = get_openai_client()
+
+# Database Models
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+    grade_level = db.Column(db.Integer, nullable=False)
+    reading_level = db.Column(db.Float, default=0.0)  # Will be calculated based on performance
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    sessions = db.relationship('ReadingSession', backref='user', lazy=True)
+
+class ReadingSession(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    book_title = db.Column(db.String(200), nullable=False)
+    chapter = db.Column(db.String(100), nullable=False)
+    total_questions = db.Column(db.Integer, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    completed_at = db.Column(db.DateTime, nullable=True)
+    
+    questions = db.relationship('Question', backref='session', lazy=True, cascade='all, delete-orphan')
+
+class Question(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    session_id = db.Column(db.Integer, db.ForeignKey('reading_session.id'), nullable=False)
+    question_text = db.Column(db.Text, nullable=False)
+    question_number = db.Column(db.Integer, nullable=False)
+    model_answer = db.Column(db.Text, nullable=True)  # Generated by LLM
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    answers = db.relationship('Answer', backref='question', lazy=True, cascade='all, delete-orphan')
+
+class Answer(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    question_id = db.Column(db.Integer, db.ForeignKey('question.id'), nullable=False)
+    answer_text = db.Column(db.Text, nullable=False)
+    feedback = db.Column(db.Text, nullable=True)
+    score = db.Column(db.Float, nullable=True)  # 0-1 score
+    rating = db.Column(db.Integer, nullable=True)  # 1-5 rating
+    examples = db.Column(db.Text, nullable=True)  # JSON string with example answers
+    is_final = db.Column(db.Boolean, default=False)
+    submission_type = db.Column(db.String(20), default='initial')  # 'initial', 'retry', 'final'
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+# Helper function to call OpenAI
+def call_openai(prompt, model="gpt-4", temperature=0.7, fallback_model="gpt-3.5-turbo"):
+    try:
+        # Reload environment to get latest API key (in case it was updated)
+        load_dotenv(dotenv_path=env_path, override=True)
+        
+        # Check if API key is set
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key or api_key == 'your-openai-api-key-here':
+            error_msg = "OpenAI API key is not configured. Please set OPENAI_API_KEY in your .env file."
+            print(f"ERROR: {error_msg}")
+            return None, error_msg
+        
+        # Get fresh client with current API key
+        client = get_openai_client()
+        
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=temperature
+            )
+            return response.choices[0].message.content, None
+        except openai.NotFoundError as e:
+            # Model not found, try fallback
+            if fallback_model and model != fallback_model:
+                print(f"WARNING: Model {model} not found, trying fallback {fallback_model}")
+                try:
+                    client = get_openai_client()
+                    response = client.chat.completions.create(
+                        model=fallback_model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=temperature
+                    )
+                    return response.choices[0].message.content, None
+                except Exception as fallback_error:
+                    error_msg = f"Both {model} and {fallback_model} failed: {str(fallback_error)}"
+                    print(f"ERROR: {error_msg}")
+                    return None, error_msg
+            else:
+                error_msg = f"Model {model} not found. Available models may be gpt-4-turbo, gpt-4o, or gpt-3.5-turbo."
+                print(f"ERROR: {error_msg}")
+                return None, error_msg
+    except openai.AuthenticationError as e:
+        error_msg = "OpenAI Authentication Error: Invalid API key. Please check your OPENAI_API_KEY in .env file."
+        print(f"ERROR: {error_msg}")
+        return None, error_msg
+    except openai.RateLimitError as e:
+        error_msg = "OpenAI Rate Limit Error: Too many requests. Please try again later."
+        print(f"ERROR: {error_msg}")
+        return None, error_msg
+    except openai.APIError as e:
+        error_msg = f"OpenAI API Error: {str(e)}"
+        print(f"ERROR: {error_msg}")
+        return None, error_msg
+    except Exception as e:
+        error_msg = f"Unexpected error calling OpenAI: {str(e)}"
+        print(f"ERROR: {error_msg}")
+        import traceback
+        traceback.print_exc()
+        return None, error_msg
+
+# Routes
+@app.route('/', methods=['GET'])
+def index():
+    return jsonify({
+        'message': 'LunaReading API Server',
+        'status': 'running',
+        'frontend': 'Please access the frontend at http://localhost:3000',
+        'backend_port': 5001,
+        'api_docs': 'API endpoints are available at /api/*'
+    }), 200
+
+@app.route('/api/register', methods=['POST'])
+def register():
+    try:
+        # Ensure database tables exist (safety check in case init failed)
+        try:
+            with app.app_context():
+                db.create_all()
+        except Exception as db_err:
+            print(f"Warning: Database creation check failed: {db_err}")
+        
+        if not request.json:
+            return jsonify({'error': 'Request body must be JSON'}), 400
+        
+        data = request.json
+        username = data.get('username')
+        email = data.get('email')
+        password = data.get('password')
+        grade_level = data.get('grade_level')
+        
+        if not all([username, email, password, grade_level]):
+            return jsonify({'error': 'All fields are required'}), 400
+        
+        # Check for existing user
+        existing_user = User.query.filter_by(username=username).first()
+        if existing_user:
+            return jsonify({'error': 'Username already exists'}), 400
+        
+        existing_email = User.query.filter_by(email=email).first()
+        if existing_email:
+            return jsonify({'error': 'Email already exists'}), 400
+        
+        # Create new user
+        user = User(
+            username=username,
+            email=email,
+            password_hash=generate_password_hash(password, method='pbkdf2:sha256'),
+            grade_level=grade_level,
+            reading_level=grade_level * 0.8  # Initial estimate
+        )
+        db.session.add(user)
+        db.session.commit()
+        
+        access_token = create_access_token(identity=str(user.id))
+        return jsonify({
+            'message': 'User created successfully',
+            'access_token': access_token,
+            'user': {
+                'id': user.id,
+                'username': user.username,
+                'grade_level': user.grade_level,
+                'reading_level': user.reading_level
+            }
+        }), 201
+    except Exception as e:
+        db.session.rollback()
+        error_msg = str(e)
+        print(f"Registration error: {error_msg}")
+        import traceback
+        traceback.print_exc()
+        # Return more detailed error in development, generic in production
+        if os.environ.get('FLASK_DEBUG') == 'True':
+            return jsonify({'error': f'Registration failed: {error_msg}'}), 500
+        else:
+            return jsonify({'error': 'Registration failed. Please try again.'}), 500
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.json
+    username = data.get('username')
+    password = data.get('password')
+    
+    if not username or not password:
+        return jsonify({'error': 'Username and password are required'}), 400
+    
+    user = User.query.filter_by(username=username).first()
+    
+    if not user or not check_password_hash(user.password_hash, password):
+        return jsonify({'error': 'Invalid credentials'}), 401
+    
+    access_token = create_access_token(identity=str(user.id))
+    return jsonify({
+        'access_token': access_token,
+        'user': {
+            'id': user.id,
+            'username': user.username,
+            'grade_level': user.grade_level,
+            'reading_level': user.reading_level
+        }
+    }), 200
+
+@app.route('/api/profile', methods=['GET'])
+@jwt_required()
+def get_profile():
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    return jsonify({
+        'id': user.id,
+        'username': user.username,
+        'email': user.email,
+        'grade_level': user.grade_level,
+        'reading_level': user.reading_level
+    }), 200
+
+@app.route('/api/profile', methods=['PUT'])
+@jwt_required()
+def update_profile():
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    data = request.json
+    if 'grade_level' in data:
+        user.grade_level = data['grade_level']
+    
+    db.session.commit()
+    
+    return jsonify({
+        'message': 'Profile updated successfully',
+        'user': {
+            'id': user.id,
+            'username': user.username,
+            'grade_level': user.grade_level,
+            'reading_level': user.reading_level
+        }
+    }), 200
+
+@app.route('/api/sessions', methods=['POST'])
+@jwt_required()
+def create_session():
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    data = request.json
+    book_title = data.get('book_title')
+    chapter = data.get('chapter')
+    total_questions = data.get('total_questions', 5)
+    
+    if not all([book_title, chapter]):
+        return jsonify({'error': 'Book title and chapter are required'}), 400
+    
+    # Create session
+    session = ReadingSession(
+        user_id=user_id,
+        book_title=book_title,
+        chapter=chapter,
+        total_questions=total_questions
+    )
+    db.session.add(session)
+    db.session.flush()
+    
+    # Generate questions using LLM
+    reading_level = user.reading_level or (user.grade_level * 0.8)
+    
+    prompt = f"""You are an expert reading comprehension teacher for elementary students.
+
+Student Information:
+- Grade Level: {user.grade_level}
+- Current Reading Level: {reading_level:.1f}
+- Book: {book_title}
+- Chapter: {chapter}
+
+Generate {total_questions} reading comprehension questions that are:
+1. Slightly above the student's current reading level (to challenge them appropriately)
+2. Based on the specified book and chapter
+3. Appropriate for elementary students
+4. Include a mix of question types (literal, inferential, evaluative)
+
+For each question, provide:
+- The question text
+- A model answer (what a good answer should include)
+
+Format your response as a JSON array with this structure:
+[
+  {{
+    "question_number": 1,
+    "question_text": "...",
+    "model_answer": "..."
+  }},
+  ...
+]
+
+Return ONLY the JSON array, no additional text."""
+
+    # Try gpt-4o first, fallback to gpt-3.5-turbo if not available
+    llm_response, error_msg = call_openai(prompt, model="gpt-4o", temperature=0.7, fallback_model="gpt-3.5-turbo")
+    
+    if not llm_response:
+        db.session.rollback()
+        error_message = error_msg if error_msg else 'Failed to generate questions. Please try again.'
+        return jsonify({'error': error_message}), 500
+    
+    try:
+        # Clean the response (remove markdown code blocks if present)
+        llm_response = llm_response.strip()
+        if llm_response.startswith('```json'):
+            llm_response = llm_response[7:]
+        if llm_response.startswith('```'):
+            llm_response = llm_response[3:]
+        if llm_response.endswith('```'):
+            llm_response = llm_response[:-3]
+        llm_response = llm_response.strip()
+        
+        questions_data = json.loads(llm_response)
+        
+        # Create question objects
+        for q_data in questions_data:
+            question = Question(
+                session_id=session.id,
+                question_number=q_data.get('question_number', len(session.questions) + 1),
+                question_text=q_data.get('question_text', ''),
+                model_answer=q_data.get('model_answer', '')
+            )
+            db.session.add(question)
+        
+        db.session.commit()
+        
+        # Return session with questions
+        session_data = {
+            'id': session.id,
+            'book_title': session.book_title,
+            'chapter': session.chapter,
+            'total_questions': session.total_questions,
+            'created_at': session.created_at.isoformat(),
+            'questions': [
+                {
+                    'id': q.id,
+                    'question_number': q.question_number,
+                    'question_text': q.question_text
+                }
+                for q in session.questions
+            ]
+        }
+        
+        return jsonify(session_data), 201
+        
+    except json.JSONDecodeError as e:
+        db.session.rollback()
+        return jsonify({'error': f'Failed to parse generated questions: {str(e)}'}), 500
+
+@app.route('/api/sessions', methods=['GET'])
+@jwt_required()
+def get_sessions():
+    user_id = int(get_jwt_identity())
+    sessions = ReadingSession.query.filter_by(user_id=user_id).order_by(ReadingSession.created_at.desc()).all()
+    
+    sessions_data = []
+    for session in sessions:
+        completed_questions = sum(1 for q in session.questions if any(a.is_final for a in q.answers))
+        sessions_data.append({
+            'id': session.id,
+            'book_title': session.book_title,
+            'chapter': session.chapter,
+            'total_questions': session.total_questions,
+            'completed_questions': completed_questions,
+            'created_at': session.created_at.isoformat(),
+            'completed_at': session.completed_at.isoformat() if session.completed_at else None
+        })
+    
+    return jsonify(sessions_data), 200
+
+@app.route('/api/sessions/<int:session_id>', methods=['GET'])
+@jwt_required()
+def get_session(session_id):
+    user_id = int(get_jwt_identity())
+    session = ReadingSession.query.filter_by(id=session_id, user_id=user_id).first()
+    
+    if not session:
+        return jsonify({'error': 'Session not found'}), 404
+    
+    questions_data = []
+    for q in session.questions:
+        final_answer = next((a for a in q.answers if a.is_final), None)
+        # Get the first submission for examples
+        first_answer = next((a for a in q.answers if a.submission_type == 'initial'), None)
+        questions_data.append({
+            'id': q.id,
+            'question_number': q.question_number,
+            'question_text': q.question_text,
+            'answer': final_answer.answer_text if final_answer else None,
+            'score': final_answer.score if final_answer else None,
+            'rating': final_answer.rating if final_answer else None,
+            'feedback': final_answer.feedback if final_answer else None,
+            'examples': json.loads(first_answer.examples) if first_answer and first_answer.examples else None
+        })
+    
+    session_data = {
+        'id': session.id,
+        'book_title': session.book_title,
+        'chapter': session.chapter,
+        'total_questions': session.total_questions,
+        'created_at': session.created_at.isoformat(),
+        'questions': questions_data
+    }
+    
+    return jsonify(session_data), 200
+
+@app.route('/api/questions/<int:question_id>/answer', methods=['POST'])
+@jwt_required()
+def submit_answer(question_id):
+    user_id = int(get_jwt_identity())
+    question = Question.query.get(question_id)
+    
+    if not question:
+        return jsonify({'error': 'Question not found'}), 404
+    
+    # Verify the question belongs to the user
+    if question.session.user_id != user_id:
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    data = request.json
+    answer_text = data.get('answer_text')
+    submission_type = data.get('submission_type', 'initial')  # 'initial', 'retry', 'final'
+    
+    if not answer_text:
+        return jsonify({'error': 'Answer text is required'}), 400
+    
+    # Get model answer
+    model_answer = question.model_answer
+    
+    # Check if this is the first submission
+    existing_answers = Answer.query.filter_by(question_id=question_id).all()
+    is_first_submission = len(existing_answers) == 0
+    
+    # Build evaluation prompt based on submission type
+    if submission_type == 'initial' and is_first_submission:
+        # First submission: provide feedback and examples
+        prompt = f"""You are an expert reading comprehension teacher evaluating a student's answer.
+
+Question: {question.question_text}
+
+Model Answer (what a good answer should include): {model_answer}
+
+Student's Answer: {answer_text}
+
+Evaluate the student's answer and provide:
+1. A score from 0.0 to 1.0 (where 1.0 is excellent and matches the model answer well)
+2. Constructive feedback that:
+   - Points out what the student did well
+   - Identifies what's missing or could be improved
+   - Provides specific guidance on how to improve
+   - Encourages the student
+3. Two example answers (based on the model answer) with key details replaced by blanks [_____] for the student's reference.
+   The examples should show the structure and key points, but leave specific details as blanks so the student can fill them in.
+
+Format your response as JSON:
+{{
+  "score": 0.85,
+  "feedback": "Your answer shows good understanding of... However, you could improve by...",
+  "examples": [
+    "Example 1: The main character [_____] because [_____]. This shows that [_____].",
+    "Example 2: According to the text, [_____] happened when [_____]. This is important because [_____]."
+  ]
+}}
+
+Return ONLY the JSON object, no additional text."""
+    elif submission_type == 'retry':
+        # Try again: re-evaluate and rate if good enough
+        prompt = f"""You are an expert reading comprehension teacher evaluating a student's revised answer.
+
+Question: {question.question_text}
+
+Model Answer (what a good answer should include): {model_answer}
+
+Student's Revised Answer: {answer_text}
+
+Evaluate the student's revised answer and provide:
+1. A score from 0.0 to 1.0 (where 1.0 is excellent and matches the model answer well)
+2. Constructive feedback that:
+   - Points out what the student improved
+   - Identifies what's still missing or could be improved
+   - Provides specific guidance on how to improve further
+   - Encourages the student
+3. A rating from 1 to 5 (where 5 is the highest) - ONLY provide a rating if the score is 0.7 or higher.
+   If the score is below 0.7, set rating to null.
+
+Format your response as JSON:
+{{
+  "score": 0.85,
+  "feedback": "Great improvement! You now mention... However, you could still improve by...",
+  "rating": 4,
+  "is_sufficient": true or false
+}}
+
+"is_sufficient" should be true if the score is 0.7 or higher, false otherwise.
+"rating" should be null if score < 0.7, otherwise a number from 1-5.
+
+Return ONLY the JSON object, no additional text."""
+    else:  # submission_type == 'final'
+        # Final submit: evaluate and always rate
+        prompt = f"""You are an expert reading comprehension teacher evaluating a student's final answer.
+
+Question: {question.question_text}
+
+Model Answer (what a good answer should include): {model_answer}
+
+Student's Final Answer: {answer_text}
+
+Evaluate the student's final answer and provide:
+1. A score from 0.0 to 1.0 (where 1.0 is excellent and matches the model answer well)
+2. Constructive feedback that:
+   - Points out what the student did well
+   - Identifies what could still be improved (if any)
+   - Provides encouragement
+3. A rating from 1 to 5 (where 5 is the highest) based on the overall quality of the answer.
+
+Format your response as JSON:
+{{
+  "score": 0.85,
+  "feedback": "Your final answer demonstrates good understanding of...",
+  "rating": 4,
+  "is_sufficient": true
+}}
+
+"is_sufficient" should be true if the score is 0.7 or higher, false otherwise.
+"rating" should always be a number from 1-5.
+
+Return ONLY the JSON object, no additional text."""
+
+    # Try gpt-4o first, fallback to gpt-3.5-turbo if not available
+    llm_response, error_msg = call_openai(prompt, model="gpt-4o", temperature=0.3, fallback_model="gpt-3.5-turbo")
+    
+    if not llm_response:
+        error_message = error_msg if error_msg else 'Failed to evaluate answer. Please try again.'
+        return jsonify({'error': error_message}), 500
+    
+    try:
+        # Clean the response
+        llm_response = llm_response.strip()
+        if llm_response.startswith('```json'):
+            llm_response = llm_response[7:]
+        if llm_response.startswith('```'):
+            llm_response = llm_response[3:]
+        if llm_response.endswith('```'):
+            llm_response = llm_response[:-3]
+        llm_response = llm_response.strip()
+        
+        evaluation = json.loads(llm_response)
+        score = float(evaluation.get('score', 0.0))
+        feedback = evaluation.get('feedback', '')
+        examples = evaluation.get('examples', [])
+        rating = evaluation.get('rating')
+        is_sufficient = evaluation.get('is_sufficient', score >= 0.7)
+        
+        # For final submission, always mark as final
+        if submission_type == 'final':
+            is_final = True
+        # For retry, mark as final if sufficient
+        elif submission_type == 'retry':
+            is_final = is_sufficient
+        # For initial, don't mark as final (student needs to refine)
+        else:
+            is_final = False
+        
+        # Create answer record
+        answer = Answer(
+            question_id=question_id,
+            answer_text=answer_text,
+            feedback=feedback,
+            score=score,
+            rating=rating,
+            examples=json.dumps(examples) if examples else None,
+            is_final=is_final,
+            submission_type=submission_type
+        )
+        db.session.add(answer)
+        
+        # If this is the final answer, check if all questions are completed
+        if is_final:
+            session = question.session
+            all_completed = all(
+                any(a.is_final for a in q.answers)
+                for q in session.questions
+            )
+            
+            if all_completed and not session.completed_at:
+                session.completed_at = datetime.utcnow()
+                
+                # Update user's reading level based on performance
+                avg_score = sum(
+                    max((a.score for a in q.answers if a.is_final), default=0)
+                    for q in session.questions
+                ) / len(session.questions)
+                
+                user = User.query.get(user_id)
+                # Adjust reading level: if average score is high, increase level slightly
+                if avg_score >= 0.8:
+                    user.reading_level = min(user.reading_level + 0.1, user.grade_level * 1.2)
+                elif avg_score >= 0.6:
+                    user.reading_level = min(user.reading_level + 0.05, user.grade_level * 1.1)
+                # If score is low, don't decrease too much (might be a bad day)
+                elif avg_score < 0.5:
+                    user.reading_level = max(user.reading_level - 0.05, user.grade_level * 0.7)
+                
+                db.session.commit()
+        
+        db.session.commit()
+        
+        # Build response based on submission type
+        response_data = {
+            'answer_id': answer.id,
+            'score': score,
+            'feedback': feedback,
+            'is_sufficient': is_sufficient,
+            'submission_type': submission_type
+        }
+        
+        if submission_type == 'initial' and examples:
+            response_data['examples'] = examples
+            response_data['message'] = 'Review the feedback and examples below, then refine your answer.'
+        elif submission_type == 'retry':
+            if rating is not None:
+                response_data['rating'] = rating
+                response_data['message'] = f'Great improvement! Your answer received a rating of {rating}/5.'
+            else:
+                response_data['message'] = 'Please continue refining your answer based on the feedback.'
+        elif submission_type == 'final':
+            response_data['rating'] = rating
+            response_data['message'] = f'Final answer submitted! Your answer received a rating of {rating}/5.'
+        
+        return jsonify(response_data), 200
+        
+    except (json.JSONDecodeError, ValueError, KeyError) as e:
+        return jsonify({'error': f'Failed to parse evaluation: {str(e)}'}), 500
+
+@app.route('/api/questions/<int:question_id>/answers', methods=['GET'])
+@jwt_required()
+def get_answers(question_id):
+    user_id = int(get_jwt_identity())
+    question = Question.query.get(question_id)
+    
+    if not question:
+        return jsonify({'error': 'Question not found'}), 404
+    
+    if question.session.user_id != user_id:
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    answers = Answer.query.filter_by(question_id=question_id).order_by(Answer.created_at.asc()).all()
+    
+    answers_data = [
+        {
+            'id': a.id,
+            'answer_text': a.answer_text,
+            'feedback': a.feedback,
+            'score': a.score,
+            'rating': a.rating,
+            'examples': json.loads(a.examples) if a.examples else None,
+            'is_final': a.is_final,
+            'submission_type': a.submission_type,
+            'created_at': a.created_at.isoformat()
+        }
+        for a in answers
+    ]
+    
+    return jsonify(answers_data), 200
+
+@app.route('/api/admin/users', methods=['GET'])
+@jwt_required()
+def get_all_users():
+    """Admin endpoint to view all users with statistics"""
+    user_id = int(get_jwt_identity())
+    current_user = User.query.get(user_id)
+    
+    if not current_user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    # For now, allow any authenticated user to view users
+    # In production, you might want to add an admin role check
+    
+    users = User.query.order_by(User.created_at.desc()).all()
+    
+    users_data = []
+    for user in users:
+        # Count sessions
+        sessions = ReadingSession.query.filter_by(user_id=user.id).all()
+        session_count = len(sessions)
+        completed_sessions = len([s for s in sessions if s.completed_at])
+        
+        # Calculate average score
+        total_score = 0.0
+        scored_questions = 0
+        
+        for session in sessions:
+            for question in session.questions:
+                final_answer = Answer.query.filter_by(
+                    question_id=question.id,
+                    is_final=True
+                ).first()
+                if final_answer and final_answer.score is not None:
+                    total_score += final_answer.score
+                    scored_questions += 1
+        
+        avg_score = (total_score / scored_questions) if scored_questions > 0 else None
+        
+        # Count total questions
+        total_questions = sum(len(s.questions) for s in sessions)
+        
+        users_data.append({
+            'id': user.id,
+            'username': user.username,
+            'email': user.email,
+            'password_hash': user.password_hash,
+            'grade_level': user.grade_level,
+            'reading_level': user.reading_level,
+            'created_at': user.created_at.isoformat() if user.created_at else None,
+            'statistics': {
+                'total_sessions': session_count,
+                'completed_sessions': completed_sessions,
+                'total_questions': total_questions,
+                'average_score': round(avg_score * 100, 2) if avg_score else None
+            }
+        })
+    
+    return jsonify({
+        'total_users': len(users_data),
+        'users': users_data
+    }), 200
+
+if __name__ == '__main__':
+    # Initialize database - do it quickly, don't block
+    try:
+        print("Initializing database...")
+        db_uri = app.config['SQLALCHEMY_DATABASE_URI']
+        print(f"Database URI: {db_uri}")
+        
+        # Ensure database directory exists (for SQLite)
+        if db_uri.startswith('sqlite:///'):
+            db_path = db_uri.replace('sqlite:///', '')
+            if db_path != ':memory:':
+                db_dir = os.path.dirname(db_path) if os.path.dirname(db_path) else '/tmp'
+                if db_dir and not os.path.exists(db_dir):
+                    os.makedirs(db_dir, exist_ok=True)
+                    print(f"Created database directory: {db_dir}")
+        
+        # Initialize database tables (non-blocking)
+        with app.app_context():
+            db.create_all()
+        print("✅ Database initialized successfully")
+    except Exception as e:
+        print(f"⚠️  Warning: Database initialization error: {e}")
+        # Continue anyway - database will be created on first use
+    
+    # Get port from environment variable (Cloud Run uses PORT env var)
+    port = int(os.environ.get('PORT', 5001))
+    # Use 0.0.0.0 to listen on all interfaces (required for Cloud Run)
+    # Cloud Run requires listening on 0.0.0.0, not 127.0.0.1
+    host = '0.0.0.0' if os.environ.get('PORT') else os.environ.get('HOST', '127.0.0.1')
+    # Disable debug in production (Cloud Run sets PORT, so disable debug)
+    debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true' and not os.environ.get('PORT')
+    
+    print(f"Starting Flask server...")
+    print(f"Host: {host}, Port: {port}, Debug: {debug}")
+    print(f"OpenAI API Key configured: {'Yes' if os.getenv('OPENAI_API_KEY') and os.getenv('OPENAI_API_KEY') != 'your-openai-api-key-here' else 'No'}")
+    
+    try:
+        app.run(host=host, port=port, debug=debug, threaded=True)
+    except Exception as e:
+        print(f"Fatal error starting server: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+

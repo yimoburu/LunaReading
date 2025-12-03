@@ -1,0 +1,92 @@
+# Cloud Build configuration for deploying to Cloud Run
+steps:
+  # Build backend Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/lunareading-backend:$SHORT_SHA'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/lunareading-backend:latest'
+      - '-f'
+      - 'Dockerfile.backend'
+      - '.'
+    id: 'build-backend'
+
+  # Build frontend Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/lunareading-frontend:$SHORT_SHA'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/lunareading-frontend:latest'
+      - '-f'
+      - 'Dockerfile.frontend'
+      - '.'
+    id: 'build-frontend'
+
+  # Push backend image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/lunareading-backend:$SHORT_SHA'
+    id: 'push-backend'
+
+  # Push frontend image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/lunareading-frontend:$SHORT_SHA'
+    id: 'push-frontend'
+
+  # Deploy backend to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'lunareading-backend'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/lunareading-backend:$SHORT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--port'
+      - '8080'
+      - '--set-env-vars'
+      - 'SQLALCHEMY_DATABASE_URI=sqlite:///lunareading.db'
+    id: 'deploy-backend'
+
+  # Deploy frontend to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'lunareading-frontend'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/lunareading-frontend:$SHORT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--port'
+      - '80'
+    id: 'deploy-frontend'
+
+images:
+  - 'gcr.io/$PROJECT_ID/lunareading-backend:$SHORT_SHA'
+  - 'gcr.io/$PROJECT_ID/lunareading-backend:latest'
+  - 'gcr.io/$PROJECT_ID/lunareading-frontend:$SHORT_SHA'
+  - 'gcr.io/$PROJECT_ID/lunareading-frontend:latest'
+
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: '1200s'
+
