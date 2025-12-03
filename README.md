@@ -78,6 +78,33 @@ The backend will run on `http://localhost:5001` (port 5000 is often used by macO
 
 The frontend will run on `http://localhost:3000` and will proxy API requests to the backend on port 5001
 
+## Project Structure
+
+```
+LunaReading/
+├── backend/          # Flask backend application
+├── frontend/         # React frontend application
+├── docs/            # Documentation files
+├── scripts/         # Debugging, testing, and utility scripts
+├── setup.sh         # Initial setup script
+├── deploy.sh        # Deployment scripts
+└── README.md        # This file
+```
+
+## Documentation
+
+- **Main README**: This file (`README.md`)
+- **Deployment Guides**: See `docs/DEPLOYMENT.md` and `docs/QUICK_START_DEPLOY.md`
+- **Troubleshooting**: See `docs/TROUBLESHOOT_DEPLOYMENT.md`
+- **All Documentation**: See `docs/` folder
+
+## Scripts
+
+- **Setup Scripts**: In root directory (`setup.sh`, `setup_api_key.sh`, etc.)
+- **Deployment Scripts**: In root directory (`deploy.sh`, `rebuild_all.sh`, etc.)
+- **Debugging/Testing Scripts**: See `scripts/` folder
+- **All Scripts**: See `scripts/README.md`
+
 ## Usage
 
 1. **Register**: Create a new account with your grade level
