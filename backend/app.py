@@ -53,9 +53,15 @@ def init_database():
     try:
         print("Initializing database...")
         db_uri = app.config['SQLALCHEMY_DATABASE_URI']
-        print(f"Database URI: {db_uri}")
+        # Don't print full connection string (contains password)
+        if 'mysql' in db_uri.lower():
+            print(f"Database: MySQL (Cloud SQL)")
+        elif 'sqlite' in db_uri.lower():
+            print(f"Database: SQLite")
+        else:
+            print(f"Database URI: {db_uri[:50]}...")
         
-        # Ensure database directory exists (for SQLite)
+        # Ensure database directory exists (for SQLite only)
         if db_uri.startswith('sqlite:///'):
             db_path = db_uri.replace('sqlite:///', '')
             if db_path != ':memory:':
@@ -66,12 +72,23 @@ def init_database():
         
         # Create all tables
         with app.app_context():
-            db.create_all()
-            print("✅ Database tables created successfully")
+            try:
+                db.create_all()
+                print("✅ Database tables created/verified successfully")
+            except Exception as db_error:
+                # For MySQL, connection might fail if Cloud SQL isn't ready
+                # Don't fail startup - let it retry on first request
+                if 'mysql' in db_uri.lower() or 'cloudsql' in db_uri.lower():
+                    print(f"⚠️  Database connection warning: {db_error}")
+                    print("   Will retry on first request (Cloud SQL might be initializing)")
+                else:
+                    raise
     except Exception as e:
         print(f"⚠️  Database initialization error: {e}")
         import traceback
         traceback.print_exc()
+        # Don't fail startup for database errors - let app handle it
+        print("   Continuing startup - database will be initialized on first request")
 
 # Initialize database when module is imported (for gunicorn --preload)
 init_database()
