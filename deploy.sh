@@ -58,9 +58,9 @@ gcloud run deploy lunareading-backend \
   --memory 512Mi \
   --cpu 1 \
   --max-instances 10 \
-  --set-env-vars "SQLALCHEMY_DATABASE_URI=sqlite:///lunareading.db" || {
+  --set-env-vars "CLOUDSQL_INSTANCE_CONNECTION_NAME=project:region:instance,CLOUDSQL_USER=user,CLOUDSQL_PASSWORD=password,CLOUDSQL_DATABASE=lunareading" || {
     echo "⚠️  Backend deployment failed. You may need to set environment variables manually:"
-    echo "   gcloud run services update lunareading-backend --update-env-vars OPENAI_API_KEY=your-key,JWT_SECRET_KEY=your-secret"
+    echo "   gcloud run services update lunareading-backend --update-env-vars CLOUDSQL_INSTANCE_CONNECTION_NAME=project:region:instance,CLOUDSQL_USER=user,CLOUDSQL_PASSWORD=password,CLOUDSQL_DATABASE=lunareading"
 }
 
 # Deploy frontend

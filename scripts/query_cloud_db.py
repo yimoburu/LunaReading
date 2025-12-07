@@ -52,16 +52,14 @@ def get_env_vars(service_name, region):
     return env_vars
 
 def detect_database_type(service_name, region):
-    """Detect if using SQLite or Cloud SQL"""
+    """Detect if using Cloud SQL (SQLite no longer supported)"""
     env_vars = get_env_vars(service_name, region)
-    db_uri = env_vars.get('SQLALCHEMY_DATABASE_URI', '')
+    connection_name = env_vars.get('CLOUDSQL_INSTANCE_CONNECTION_NAME', '')
     
-    if 'cloudsql' in db_uri.lower() or 'postgresql' in db_uri.lower() or 'mysql' in db_uri.lower():
-        return 'cloudsql', db_uri
-    elif 'sqlite' in db_uri.lower():
-        return 'sqlite', db_uri
+    if connection_name:
+        return 'cloudsql', connection_name
     else:
-        return 'unknown', db_uri
+        return 'unknown', 'No Cloud SQL configuration found'
 
 def query_sqlite_cloud_run(service_name, region, query, db_path='/tmp/lunareading.db'):
     """Query SQLite database in Cloud Run container"""

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
 Migrate data from SQLite to MySQL (Cloud SQL)
+
+⚠️  DEPRECATED: This script uses SQLAlchemy. SQLite is no longer supported.
+   This script may need updates to work with Cloud SQL Connector.
 """
 
 import sqlite3

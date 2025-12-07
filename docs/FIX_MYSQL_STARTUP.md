@@ -9,7 +9,7 @@ The user-provided container failed to start and listen on the port defined provi
 
 ## Common Causes
 
-1. **Missing MySQL Dependencies**: `pymysql` and `sqlalchemy` not installed in container
+1. **Missing MySQL Dependencies**: `pymysql` and `google-cloud-sql-connector` not installed in container
 2. **Database Connection Error**: Can't connect to Cloud SQL on startup
 3. **Cloud SQL Not Connected**: Instance not added to Cloud Run service
 4. **Incorrect Connection String**: Wrong format or credentials
@@ -18,7 +18,7 @@ The user-provided container failed to start and listen on the port defined provi
 
 ### Step 1: Rebuild Backend with MySQL Dependencies
 
-The backend Docker image needs to be rebuilt to include `pymysql` and `sqlalchemy`:
+The backend Docker image needs to be rebuilt to include `pymysql` and `google-cloud-sql-connector`:
 
 ```bash
 ./scripts/fix_mysql_startup.sh us-central1
@@ -63,17 +63,20 @@ gcloud run deploy lunareading-backend \
 Check that `requirements.txt` includes:
 ```
 pymysql==1.1.0
-sqlalchemy==2.0.23
+google-cloud-sql-connector==1.11.0
 ```
 
-### Step 4: Check Connection String
+### Step 4: Check Connection Configuration
 
-Verify the connection string format:
+Verify the environment variables are set:
 ```
-mysql+pymysql://USER:PASSWORD@/DATABASE?unix_socket=/cloudsql/CONNECTION_NAME
+CLOUDSQL_INSTANCE_CONNECTION_NAME=project:region:instance
+CLOUDSQL_USER=username
+CLOUDSQL_PASSWORD=password
+CLOUDSQL_DATABASE=database_name
 ```
 
-Where `CONNECTION_NAME` is: `PROJECT_ID:REGION:INSTANCE_NAME`
+Where connection name format is: `PROJECT_ID:REGION:INSTANCE_NAME`
 
 ### Step 5: Check Cloud SQL Connection
 
@@ -187,7 +190,7 @@ If you need to rollback temporarily:
 ```bash
 gcloud run services update lunareading-backend \
   --region us-central1 \
-  --update-env-vars "SQLALCHEMY_DATABASE_URI=sqlite:////tmp/lunareading.db" \
+  --update-env-vars "CLOUDSQL_INSTANCE_CONNECTION_NAME=project:region:instance,CLOUDSQL_USER=user,CLOUDSQL_PASSWORD=password,CLOUDSQL_DATABASE=lunareading" \
   --remove-cloudsql-instances PROJECT:REGION:INSTANCE
 ```
 

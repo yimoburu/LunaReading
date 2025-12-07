@@ -24,11 +24,9 @@ ENV PORT=8080
 # Expose port
 EXPOSE 8080
 
-# Create directory for database (if using SQLite)
-RUN mkdir -p /app/data
-
 # Run the application with gunicorn for production
 # Gunicorn is more reliable for Cloud Run than Flask's dev server
 # Use single worker with threads, longer timeout for Cloud Run
-CMD exec gunicorn --bind 0.0.0.0:${PORT:-8080} --workers 1 --threads 4 --timeout 300 --graceful-timeout 30 --keep-alive 5 --access-logfile - --error-logfile - --log-level info --preload "backend.app:app"
+# Removed --preload to avoid blocking during import
+CMD exec gunicorn --bind 0.0.0.0:${PORT:-8080} --workers 1 --threads 4 --timeout 300 --graceful-timeout 30 --keep-alive 5 --access-logfile - --error-logfile - --log-level warning "backend.app:app"
 

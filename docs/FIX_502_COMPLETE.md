@@ -28,7 +28,7 @@ This script will:
 ```bash
 gcloud run services update lunareading-backend \
   --region us-central1 \
-  --update-env-vars "SQLALCHEMY_DATABASE_URI=sqlite:////tmp/lunareading.db"
+  --update-env-vars "CLOUDSQL_INSTANCE_CONNECTION_NAME=project:region:instance,CLOUDSQL_USER=user,CLOUDSQL_PASSWORD=password,CLOUDSQL_DATABASE=lunareading"
 ```
 
 ### Step 2: Set Required Environment Variables

@@ -18,7 +18,7 @@ The app might be crashing because required env vars aren't set.
 ```bash
 gcloud run services update lunareading-backend \
   --region us-central1 \
-  --update-env-vars "OPENAI_API_KEY=your-key,JWT_SECRET_KEY=your-secret,SQLALCHEMY_DATABASE_URI=sqlite:////tmp/lunareading.db"
+  --update-env-vars "OPENAI_API_KEY=your-key,JWT_SECRET_KEY=your-secret,CLOUDSQL_INSTANCE_CONNECTION_NAME=project:region:instance,CLOUDSQL_USER=user,CLOUDSQL_PASSWORD=password,CLOUDSQL_DATABASE=lunareading"
 ```
 
 ### 3. App Crashing on Startup
@@ -37,17 +37,17 @@ gcloud run services update lunareading-backend \
   --timeout=300
 ```
 
-## Quick Fix: Use /tmp for Database
+## Quick Fix: Configure Cloud SQL Connection
 
-The easiest fix is to use `/tmp` directory which is writable in Cloud Run:
+Ensure Cloud SQL connection is properly configured:
 
 ```bash
 gcloud run services update lunareading-backend \
   --region us-central1 \
-  --update-env-vars "SQLALCHEMY_DATABASE_URI=sqlite:////tmp/lunareading.db"
+  --update-env-vars "CLOUDSQL_INSTANCE_CONNECTION_NAME=project:region:instance,CLOUDSQL_USER=user,CLOUDSQL_PASSWORD=password,CLOUDSQL_DATABASE=lunareading"
 ```
 
-**Note**: Data in `/tmp` is lost when the container restarts. For production, use Cloud SQL.
+**Note**: Cloud SQL is required - SQLite is not supported.
 
 ## Check Logs
 

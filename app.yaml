@@ -2,7 +2,11 @@
 runtime: python39
 
 env_variables:
-  SQLALCHEMY_DATABASE_URI: "sqlite:///lunareading.db"
+  # Cloud SQL connection (using Cloud SQL Connector)
+  CLOUDSQL_INSTANCE_CONNECTION_NAME: "project:region:instance"
+  CLOUDSQL_USER: "your-username"
+  CLOUDSQL_PASSWORD: "your-password"
+  CLOUDSQL_DATABASE: "lunareading"
   # Note: Set OPENAI_API_KEY and JWT_SECRET_KEY in App Engine settings
   # or use Secret Manager
 
@@ -10,7 +14,5 @@ handlers:
 - url: /.*
   script: auto
 
-# Note: For production, consider using Cloud SQL instead of SQLite
-# env_variables:
-#   SQLALCHEMY_DATABASE_URI: "mysql+pymysql://user:password@/lunareading?unix_socket=/cloudsql/project:region:instance"
+# Note: For production, set Cloud SQL connection variables above
 

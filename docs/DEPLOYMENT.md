@@ -39,12 +39,15 @@ Create a `.env.production` file with your production secrets:
 ```bash
 OPENAI_API_KEY=your-production-openai-api-key
 JWT_SECRET_KEY=your-production-jwt-secret-key
-SQLALCHEMY_DATABASE_URI=sqlite:///lunareading.db
+CLOUDSQL_INSTANCE_CONNECTION_NAME=project:region:instance
+CLOUDSQL_USER=your-username
+CLOUDSQL_PASSWORD=your-password
+CLOUDSQL_DATABASE=lunareading
 ```
 
-**Important**: For production, consider using:
-- **Cloud SQL** instead of SQLite for the database
-- **Secret Manager** for storing API keys securely
+**Important**: For production:
+- **Cloud SQL** is required (SQLite is not supported)
+- **Secret Manager** recommended for storing API keys securely
 
 ### 3. Update Backend for Cloud Run
 
@@ -188,7 +191,11 @@ gcloud sql instances create lunareading-db \
 gcloud sql databases create lunareading --instance=lunareading-db
 
 # Update connection string in app.py
-# SQLALCHEMY_DATABASE_URI = "postgresql://user:password@/lunareading?host=/cloudsql/project:region:instance"
+# Cloud SQL connection variables:
+# CLOUDSQL_INSTANCE_CONNECTION_NAME = "project:region:instance"
+# CLOUDSQL_USER = "user"
+# CLOUDSQL_PASSWORD = "password"
+# CLOUDSQL_DATABASE = "lunareading"
 ```
 
 ### Option 2: Cloud Storage for SQLite (Simple)

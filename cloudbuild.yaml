@@ -41,6 +41,8 @@ steps:
     id: 'push-frontend'
 
   # Deploy backend to Cloud Run
+  # NOTE: Replace placeholder values with actual Cloud SQL connection details
+  # The --add-cloudsql-instances flag is required for Cloud Run to connect to Cloud SQL
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
@@ -56,8 +58,12 @@ steps:
       - '--allow-unauthenticated'
       - '--port'
       - '8080'
+      # Add Cloud SQL instance (replace with your actual instance connection name)
+      # Format: project:region:instance
+      - '--add-cloudsql-instances'
+      - 'PROJECT:REGION:INSTANCE'
       - '--set-env-vars'
-      - 'SQLALCHEMY_DATABASE_URI=sqlite:///lunareading.db'
+      - 'CLOUDSQL_INSTANCE_CONNECTION_NAME=PROJECT:REGION:INSTANCE,CLOUDSQL_USER=user,CLOUDSQL_PASSWORD=password,CLOUDSQL_DATABASE=lunareading'
     id: 'deploy-backend'
 
   # Deploy frontend to Cloud Run

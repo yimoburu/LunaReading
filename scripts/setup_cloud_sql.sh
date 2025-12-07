@@ -5,7 +5,7 @@ set -e
 
 PROJECT_ID=${1:-$(gcloud config get-value project 2>/dev/null)}
 REGION=${2:-"us-central1"}
-INSTANCE_NAME=${3:-"lunareading-db"}
+INSTANCE_NAME=${3:-"free-trial-first-project"}
 DATABASE_NAME=${4:-"lunareading"}
 DB_USER=${5:-"lunareading_user"}
 TIER=${6:-"db-f1-micro"}  # db-f1-micro is the smallest/cheapest tier
@@ -16,7 +16,7 @@ if [ -z "$PROJECT_ID" ]; then
     echo "Usage: $0 [PROJECT_ID] [REGION] [INSTANCE_NAME] [DATABASE_NAME] [DB_USER] [TIER]"
     echo ""
     echo "Example:"
-    echo "  $0 lunareading-app us-central1 lunareading-db lunareading lunareading_user db-f1-micro"
+    echo "  $0 lunareading-app us-central1 free-trial-first-project lunareading lunareading_user db-f1-micro"
     echo ""
     echo "Or set gcloud project first:"
     echo "  gcloud config set project YOUR_PROJECT_ID"

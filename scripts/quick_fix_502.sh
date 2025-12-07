@@ -7,10 +7,9 @@ echo "🔧 Fixing 502 Error on Cloud Run"
 echo "================================"
 echo ""
 
-echo "1. Updating database path to use /tmp (writable in Cloud Run)..."
-gcloud run services update lunareading-backend \
-  --region $REGION \
-  --update-env-vars "SQLALCHEMY_DATABASE_URI=sqlite:////tmp/lunareading.db"
+echo "1. Checking Cloud SQL configuration..."
+echo "   Note: Cloud SQL connection should be configured with CLOUDSQL_* environment variables"
+echo "   If not set, you'll need to configure Cloud SQL connection"
 
 echo ""
 echo "2. Setting required environment variables..."

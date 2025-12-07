@@ -15,7 +15,7 @@ echo "==================================="
 echo ""
 
 echo "The container is failing to start. Common causes:"
-echo "  1. Missing MySQL dependencies (pymysql, sqlalchemy)"
+echo "  1. Missing MySQL dependencies (pymysql, google-cloud-sql-connector)"
 echo "  2. Database connection errors"
 echo "  3. Cloud SQL instance not properly connected"
 echo ""
@@ -80,7 +80,7 @@ if [ -f .cloudsql_user_password ]; then
             --region $REGION \
             --image gcr.io/$PROJECT_ID/lunareading-backend:latest \
             --add-cloudsql-instances $CONNECTION_NAME \
-            --update-env-vars "SQLALCHEMY_DATABASE_URI=${CONNECTION_STRING}" \
+            --update-env-vars "CLOUDSQL_INSTANCE_CONNECTION_NAME=${CONNECTION_NAME},CLOUDSQL_USER=${DB_USER},CLOUDSQL_PASSWORD=${DB_PASSWORD},CLOUDSQL_DATABASE=${DATABASE_NAME}" \
             --project=$PROJECT_ID
         
         echo ""

@@ -62,7 +62,7 @@ This will:
 Install required Python packages:
 
 ```bash
-pip install pymysql sqlalchemy
+pip install pymysql google-cloud-sql-connector[pymysql]
 ```
 
 Or install all requirements:
@@ -76,11 +76,14 @@ pip install -r requirements.txt
 **Option A: Migrate existing data (if you have data in SQLite)**
 
 ```bash
-# Set the connection string (from Step 2 output)
-export SQLALCHEMY_DATABASE_URI="mysql+pymysql://user:password@/lunareading?unix_socket=/cloudsql/PROJECT:REGION:INSTANCE"
+# Set the Cloud SQL connection variables (from Step 2 output)
+export CLOUDSQL_INSTANCE_CONNECTION_NAME="PROJECT:REGION:INSTANCE"
+export CLOUDSQL_USER="user"
+export CLOUDSQL_PASSWORD="password"
+export CLOUDSQL_DATABASE="lunareading"
 
-# Run migration
-python3 scripts/migrate_to_mysql.py
+# Run migration (if migration script exists)
+# Note: Tables will be created automatically on first app start
 ```
 
 **Option B: Start fresh (if no important data)**
@@ -115,7 +118,10 @@ For local development with Cloud SQL, you can use Cloud SQL Proxy:
 cloud_sql_proxy -instances=PROJECT:REGION:INSTANCE=tcp:3306
 
 # Update .env file
-SQLALCHEMY_DATABASE_URI=mysql+pymysql://user:password@127.0.0.1:3306/lunareading
+CLOUDSQL_INSTANCE_CONNECTION_NAME=project:region:instance
+CLOUDSQL_USER=user
+CLOUDSQL_PASSWORD=password
+CLOUDSQL_DATABASE=lunareading
 ```
 
 ## Cost Information
@@ -176,11 +182,11 @@ Where `CONNECTION_NAME` is: `PROJECT_ID:REGION:INSTANCE_NAME`
 If you need to rollback to SQLite:
 
 ```bash
-# Update Cloud Run service
+# Update Cloud Run service (if rolling back)
 gcloud run services update lunareading-backend \
     --region us-central1 \
-    --update-env-vars "SQLALCHEMY_DATABASE_URI=sqlite:////tmp/lunareading.db" \
     --remove-cloudsql-instances PROJECT:REGION:INSTANCE
+    # Note: Cloud SQL is required - cannot rollback to SQLite
 ```
 
 ## Next Steps
@@ -205,18 +211,25 @@ gcloud run services update lunareading-backend \
 For better security, store credentials in Secret Manager:
 
 ```bash
-# Create secrets
-echo -n "mysql+pymysql://user:pass@/db?unix_socket=/cloudsql/..." | \
-    gcloud secrets create database-uri --data-file=-
+# Create secrets for Cloud SQL credentials
+echo -n "project:region:instance" | \
+    gcloud secrets create cloudsql-connection-name --data-file=-
+echo -n "username" | \
+    gcloud secrets create cloudsql-user --data-file=-
+echo -n "password" | \
+    gcloud secrets create cloudsql-password --data-file=-
+echo -n "database" | \
+    gcloud secrets create cloudsql-database --data-file=-
 
 # Grant access
-gcloud secrets add-iam-policy-binding database-uri \
+gcloud secrets add-iam-policy-binding cloudsql-connection-name \
     --member="serviceAccount:SERVICE_ACCOUNT" \
     --role="roles/secretmanager.secretAccessor"
+# Repeat for other secrets...
 
 # Update Cloud Run
 gcloud run services update lunareading-backend \
-    --update-secrets SQLALCHEMY_DATABASE_URI=database-uri:latest
+    --update-secrets CLOUDSQL_INSTANCE_CONNECTION_NAME=cloudsql-connection-name:latest,CLOUDSQL_USER=cloudsql-user:latest,CLOUDSQL_PASSWORD=cloudsql-password:latest,CLOUDSQL_DATABASE=cloudsql-database:latest
 ```
 
 ## Support

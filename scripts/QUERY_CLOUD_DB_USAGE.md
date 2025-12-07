@@ -210,7 +210,7 @@ gcloud sql databases create lunareading --instance=lunareading-db
 # Update Cloud Run service
 gcloud run services update lunareading-backend \
   --add-cloudsql-instances=PROJECT:REGION:lunareading-db \
-  --update-env-vars SQLALCHEMY_DATABASE_URI=postgresql://user:pass@/lunareading?host=/cloudsql/PROJECT:REGION:lunareading-db
+  --update-env-vars CLOUDSQL_INSTANCE_CONNECTION_NAME=PROJECT:REGION:lunareading-db,CLOUDSQL_USER=user,CLOUDSQL_PASSWORD=pass,CLOUDSQL_DATABASE=lunareading
 ```
 
 ## Troubleshooting

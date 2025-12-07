@@ -19,12 +19,12 @@ fi
 echo "Backend URL: $BACKEND_URL"
 echo ""
 
-# Fix 1: Update database path to use /tmp (writable in Cloud Run)
-echo "1. Updating database path to /tmp (writable in Cloud Run)..."
-gcloud run services update lunareading-backend \
-  --region $REGION \
-  --update-env-vars "SQLALCHEMY_DATABASE_URI=sqlite:////tmp/lunareading.db" \
-  --quiet
+# Fix 1: Update Cloud SQL connection (if not already set)
+echo "1. Checking Cloud SQL configuration..."
+echo "   (Cloud SQL connection should be set via CLOUDSQL_* environment variables)"
+echo "   If not set, configure with:"
+echo "   gcloud run services update lunareading-backend --region $REGION \\"
+echo "     --update-env-vars \"CLOUDSQL_INSTANCE_CONNECTION_NAME=project:region:instance,CLOUDSQL_USER=user,CLOUDSQL_PASSWORD=password,CLOUDSQL_DATABASE=lunareading\""
 
 echo "✅ Database path updated"
 echo ""
