@@ -31,14 +31,7 @@ def create_app():
     
     # Load configuration (non-blocking, just sets config values)
     app.config.from_object(Config)
-    
-    # Validate config but don't fail if env vars are missing (they'll be set later)
-    try:
-        Config.validate_database()
-    except Exception:
-        # Config validation failed, but continue - env vars might be set via Cloud Run
-        pass
-    
+
     # Initialize extensions (fast, non-blocking)
     CORS(app)
     jwt.init_app(app)

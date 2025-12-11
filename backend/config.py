@@ -58,14 +58,7 @@ class Config:
     def get_env_path():
         """Get the path to .env file"""
         return env_path
-    
-    @staticmethod
-    def validate_database():
-        """Validate Cloud SQL configuration (non-blocking, just checks env vars)"""
-        # Only validate that env vars are set, don't try to connect
-        # This ensures fast startup
-        pass
-    
+
     @staticmethod
     def diagnose_connection_error(error):
         """

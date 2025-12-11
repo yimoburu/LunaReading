@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import API_URL from '../config';
 import Navbar from './Navbar';
+import audioService from '../utils/audioService';
 
 const SessionView = () => {
   const { sessionId } = useParams();
@@ -15,10 +16,61 @@ const SessionView = () => {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState({});
   const [error, setError] = useState('');
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isListening, setIsListening] = useState({});
+  const speakingQuestionId = useRef(null);
 
   useEffect(() => {
     fetchSession();
   }, [sessionId]);
+  
+  useEffect(() => {
+    // Set up audio service callbacks
+    audioService.onSpeakingStart = () => setIsSpeaking(true);
+    audioService.onSpeakingEnd = () => {
+      setIsSpeaking(false);
+      speakingQuestionId.current = null;
+    };
+    audioService.onListeningStart = () => {};
+    audioService.onListeningEnd = () => {
+      setIsListening(prev => {
+        const newState = { ...prev };
+        if (speakingQuestionId.current !== null) {
+          newState[speakingQuestionId.current] = false;
+        }
+        return newState;
+      });
+    };
+    audioService.onResult = (transcript) => {
+      if (speakingQuestionId.current !== null) {
+        const questionId = speakingQuestionId.current;
+        setAnswers(prev => ({
+          ...prev,
+          [questionId]: transcript
+        }));
+        setIsListening(prev => ({
+          ...prev,
+          [questionId]: false
+        }));
+      }
+    };
+    audioService.onError = (error) => {
+      console.error('Audio service error:', error);
+      setIsListening(prev => {
+        const newState = { ...prev };
+        if (speakingQuestionId.current !== null) {
+          newState[speakingQuestionId.current] = false;
+        }
+        return newState;
+      });
+    };
+    
+    // Cleanup on unmount
+    return () => {
+      audioService.stopSpeaking();
+      audioService.stopListening();
+    };
+  }, []);
 
   const fetchSession = async () => {
     try {
@@ -175,8 +227,31 @@ const SessionView = () => {
           return (
             <div key={question.id} className="card">
               <div className="question-card">
-                <div className="question-number">
-                  Question {question.question_number}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                  <div className="question-number">
+                    Question {question.question_number}
+                  </div>
+                  <button
+                    onClick={() => {
+                      if (isSpeaking && speakingQuestionId.current === question.id) {
+                        audioService.stopSpeaking();
+                      } else {
+                        speakingQuestionId.current = question.id;
+                        audioService.speak(question.question_text);
+                      }
+                    }}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      cursor: 'pointer',
+                      fontSize: '18px',
+                      color: '#667eea',
+                      padding: '5px'
+                    }}
+                    title={isSpeaking && speakingQuestionId.current === question.id ? 'Stop reading' : 'Read question'}
+                  >
+                    {isSpeaking && speakingQuestionId.current === question.id ? '⏸️' : '🔊'}
+                  </button>
                 </div>
                 <p style={{ fontSize: '18px', marginBottom: '20px' }}>
                   {question.question_text}
@@ -185,7 +260,40 @@ const SessionView = () => {
                 {!isCompleted ? (
                   <>
                     <div className="form-group">
-                      <label>Your Answer</label>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                        <label>Your Answer</label>
+                        <button
+                          onClick={() => {
+                            if (isListening[question.id]) {
+                              audioService.stopListening();
+                              setIsListening({ ...isListening, [question.id]: false });
+                            } else {
+                              if (audioService.isSpeechRecognitionAvailable()) {
+                                speakingQuestionId.current = question.id;
+                                setIsListening({ ...isListening, [question.id]: true });
+                                audioService.startListening();
+                              } else {
+                                alert('Speech recognition is not supported in your browser. Please use Chrome or Edge.');
+                              }
+                            }
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            fontSize: '18px',
+                            color: isListening[question.id] ? '#dc3545' : '#667eea',
+                            padding: '5px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '5px'
+                          }}
+                          disabled={submitting[question.id] || isCompleted}
+                          title={isListening[question.id] ? 'Stop listening' : 'Voice input'}
+                        >
+                          {isListening[question.id] ? '🎤 Listening...' : '🎤'}
+                        </button>
+                      </div>
                       <textarea
                         value={answers[question.id] || ''}
                         onChange={(e) => handleAnswerChange(question.id, e.target.value)}
@@ -242,12 +350,35 @@ const SessionView = () => {
                 )}
 
                 {/* Show feedback and examples after first submission */}
-                {feedback && !isCompleted && feedback.submissionType === 'initial' && (
-                  <div style={{ marginTop: '20px' }}>
-                    <div className="feedback-box">
-                      <strong>Feedback:</strong>
-                      <p style={{ marginTop: '8px' }}>{feedback.feedback}</p>
-                    </div>
+                    {feedback && !isCompleted && feedback.submissionType === 'initial' && (
+                      <div style={{ marginTop: '20px' }}>
+                        <div className="feedback-box">
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                            <strong>Feedback:</strong>
+                            <button
+                              onClick={() => {
+                                if (isSpeaking && speakingQuestionId.current === `feedback-${question.id}`) {
+                                  audioService.stopSpeaking();
+                                } else {
+                                  speakingQuestionId.current = `feedback-${question.id}`;
+                                  audioService.speak(feedback.feedback);
+                                }
+                              }}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: 'pointer',
+                                fontSize: '16px',
+                                color: '#667eea',
+                                padding: '5px'
+                              }}
+                              title={isSpeaking && speakingQuestionId.current === `feedback-${question.id}` ? 'Stop reading' : 'Read feedback'}
+                            >
+                              {isSpeaking && speakingQuestionId.current === `feedback-${question.id}` ? '⏸️' : '🔊'}
+                            </button>
+                          </div>
+                          <p style={{ marginTop: '8px' }}>{feedback.feedback}</p>
+                        </div>
 
                     {questionExamples.length > 0 && (
                       <div style={{ 

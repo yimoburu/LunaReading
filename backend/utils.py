@@ -112,9 +112,7 @@ def get_db_client(app):
     Returns:
         CloudSQLClient or None
     """
-    if hasattr(app, 'get_db_client'):
-        return app.get_db_client()
-    return app.db_client if hasattr(app, 'db_client') else None
+    return app.get_db_client()
 
 
 def require_db_client(app):
